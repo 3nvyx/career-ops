@@ -16,7 +16,6 @@
           # edits it changes only this path, never the symlinks.
           - .agents/skills/**
           - .claude/skills/**
-          - .cursor/skills/**
           - .opencode/skills/**
           - .qwen/skills/**
           - .antigravitycli/skills/**

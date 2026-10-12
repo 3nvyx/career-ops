@@ -1905,7 +1905,6 @@ const systemFiles = [
   'modes/heuristics/recruiter-side.md',
   'templates/states.yml', 'templates/cv-template.html',
   '.claude/skills/career-ops/SKILL.md',
-  '.cursor/skills/career-ops/SKILL.md',
   '.opencode/skills/career-ops/SKILL.md',
   '.qwen/skills/career-ops/SKILL.md',
   '.antigravitycli/skills/career-ops/SKILL.md',
@@ -6661,7 +6660,6 @@ console.log('\n12. Skill symlink integrity');
 const canonicalSkill = '.agents/skills/career-ops/SKILL.md';
 const symlinks = [
   '.claude/skills/career-ops/SKILL.md',
-  '.cursor/skills/career-ops/SKILL.md',
   '.opencode/skills/career-ops/SKILL.md',
   '.qwen/skills/career-ops/SKILL.md',
   '.antigravitycli/skills/career-ops/SKILL.md',
