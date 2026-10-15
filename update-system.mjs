@@ -340,6 +340,7 @@ const SYSTEM_PATHS = [
   'application-answers.mjs',
   'generate-cover-letter.mjs',
   'merge-tracker.mjs',
+  'persist-evaluation-report.mjs',
   'url-key.mjs',
   'sync-pdf-flags.mjs',
   'tracker-links.mjs',
