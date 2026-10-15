@@ -54,9 +54,91 @@ export default {
     if (!apiUrl) throw new Error(`recruitee: cannot derive API URL for ${entry.name}`);
     assertRecruiteeUrl(apiUrl);
     const json = await ctx.fetchJson(apiUrl, { redirect: 'error' });
-    return parseRecruiteeResponse(json, entry.name);
+    return parseRecruiteeResponse(json, entry.name, { allLanguages: ctx?.dedupIncludeLanguage === true });
   },
 };
+
+// The query param a Recruitee offer page takes its rendering language from.
+// Without it the page renders the offer's default language.
+const LANGUAGE_PARAM = 'lang';
+
+// A language code as Recruitee writes it in `translations` (`de`, `en`). Codes
+// go into job URLs verbatim, so this gate keeps them to tag characters;
+// scan.mjs canonicalizes them for comparison.
+const LANGUAGE_RE = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i;
+
+/**
+ * `url` with the language param set to `language`.
+ *
+ * @param {string} url - Already validated as an https URL.
+ * @param {string} language - Already checked against LANGUAGE_RE.
+ * @returns {string}
+ */
+function withLanguage(url, language) {
+  const parsed = new URL(url);
+  parsed.searchParams.set(LANGUAGE_PARAM, language);
+  return parsed.href;
+}
+
+/**
+ * The language versions of one offer, its default language first.
+ *
+ * `translations` maps a language code to that version's `title`,
+ * `description` and `requirements`. Each version, the offer's own top-level
+ * fields included, is compared by the Job text it produces (versionText): the
+ * trimmed title and the plain-text description and requirements. Nothing
+ * names the default language, so it is the translation whose Job text equals
+ * the top-level one — the version the API serves without a language param. A
+ * further translation with the same Job text as a version already returned is
+ * a copy under another label, not a translation, and is skipped.
+ *
+ * Without `allLanguages`, the offer comes back once, from its top-level fields,
+ * tagged with the default language when one matches. With it, every
+ * translation comes back, the default one first; when none matches the
+ * top-level fields, the translations come back in the API's order, and the
+ * top-level fields, which would repeat one of them untagged, are left out.
+ * An offer with no usable translation comes back once from its top-level
+ * fields, with no `language`, either way.
+ *
+ * @param {any} j - One offer.
+ * @param {boolean} allLanguages
+ * @returns {Array<{title: string, description: string, language?: string}>}
+ */
+function languageVersions(j, allLanguages) {
+  const top = versionText(j.title, j.description, j.requirements);
+  const versionKey = (v) => JSON.stringify([v.title, v.description]);
+  const translations = j.translations && typeof j.translations === 'object' ? j.translations : {};
+  const entries = Object.entries(translations)
+    .filter(([code, t]) => LANGUAGE_RE.test(code) && t && typeof t === 'object')
+    .map(([code, t]) => ({ ...versionText(t.title, t.description, t.requirements), language: code }));
+  const defaultEntry = entries.find(v => versionKey(v) === versionKey(top));
+  const versions = defaultEntry ? [{ ...top, language: defaultEntry.language }] : [];
+  if (!allLanguages) return versions.length ? versions : [top];
+  const seen = new Set(versions.map(versionKey));
+  for (const version of entries) {
+    if (!version.title || seen.has(versionKey(version))) continue;
+    seen.add(versionKey(version));
+    versions.push(version);
+  }
+  return versions.length ? versions : [top];
+}
+
+/**
+ * The Job text of one version: the trimmed title, and the description and
+ * requirements joined, introduction first, and stripped to plain text.
+ *
+ * @param {unknown} title
+ * @param {unknown} description
+ * @param {unknown} requirements
+ * @returns {{title: string, description: string}}
+ */
+function versionText(title, description, requirements) {
+  const body = [description, requirements].filter(part => typeof part === 'string' && part.trim());
+  return {
+    title: typeof title === 'string' ? title.trim() : '',
+    description: htmlToText(body.join('\n')),
+  };
+}
 
 // Recruitee serves a shared demo/trial-account posting for tenants that
 // never launched real hiring — the API still answers 200 with well-formed
@@ -271,6 +353,16 @@ function parseSalary(salary) {
  *   when absent, malformed, or not a real calendar date and time.
  * - salary: `salary` annualized by its `period` (see parseSalary); omitted
  *   when the offer states no figure or no known period.
+ * - language: the offer's default language code, read from `translations`
+ *   (see languageVersions); omitted when no translation matches the
+ *   top-level fields. With `allLanguages` (scan_history.dedup_include_language)
+ *   each translation comes back as its own Job, the default one first, with
+ *   its own title and description and the same location, date and salary;
+ *   when no translation matches the top-level fields, the translations alone
+ *   come back. Every Job that carries a `language` carries it as `?lang=` on its
+ *   URL too, so the language versions of one offer share a dedup key in
+ *   scan.mjs and are told apart by `language`. The translations ship in the
+ *   same response, so no request is added.
  * - a posting Recruitee itself marks "(Sample)" in the title is dropped
  *   entirely (see isRecruiteeSamplePosting), so a tenant serving only its
  *   seeded sample posting resolves as empty rather than as a live board.
@@ -296,9 +388,10 @@ function parseSalary(salary) {
  *
  * @param {any} json
  * @param {string} companyName
- * @returns {Array<{title: string, url: string, company: string, location: string, description?: string, postedAt?: number, salary?: {min: number, max: number, currency: string}}>}
+ * @param {{allLanguages?: boolean}} [options]
+ * @returns {Array<{title: string, url: string, company: string, location: string, description?: string, postedAt?: number, salary?: {min: number, max: number, currency: string}, language?: string}>}
  */
-export function parseRecruiteeResponse(json, companyName) {
+export function parseRecruiteeResponse(json, companyName, { allLanguages = false } = {}) {
   const offers = json && typeof json === 'object' && Array.isArray(json.offers) ? json.offers : null;
   if (!offers) {
     const got = json && typeof json === 'object' ? Object.keys(json).join(', ') : typeof json;
@@ -337,20 +430,21 @@ export function parseRecruiteeResponse(json, companyName) {
     if (!url) continue;
 
     const location = assembleLocation(j);
-    const body = [j.description, j.requirements].filter(part => typeof part === 'string' && part.trim());
-    const description = htmlToText(body.join('\n'));
     const postedAt = toEpochMs(j.published_at);
     const salary = parseSalary(j.salary);
 
-    out.push({
-      title,
-      url,
-      location,
-      company: companyName,
-      ...(description ? { description } : {}),
-      ...(postedAt !== undefined ? { postedAt } : {}),
-      ...(salary ? { salary } : {}),
-    });
+    for (const version of languageVersions(j, allLanguages)) {
+      out.push({
+        title: version.title,
+        url: version.language ? withLanguage(url, version.language) : url,
+        location,
+        company: companyName,
+        ...(version.description ? { description: version.description } : {}),
+        ...(postedAt !== undefined ? { postedAt } : {}),
+        ...(salary ? { salary } : {}),
+        ...(version.language ? { language: version.language } : {}),
+      });
+    }
   }
   return out;
 }

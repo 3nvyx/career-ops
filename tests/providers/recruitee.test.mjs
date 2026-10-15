@@ -321,6 +321,158 @@ try {
     fail(`unusable salary rows = ${JSON.stringify(salaryOffers.slice(4).map(o => o.salary))}`);
   }
 
+  // ── Language versions ──
+  // `translations` carries every language version of an offer. The default
+  // one is the translation whose Job text equals the top-level one, whatever
+  // its key order; it always comes first, and the others only with allLanguages.
+  const bilingual = {
+    title: 'Senior QA Engineer (m/w/d)',
+    careers_url: 'https://acme.recruitee.com/o/senior-qa',
+    description: '<p>Acme baut Software.</p>',
+    requirements: '<p>Playwright</p>',
+    location: 'Berlin, Germany',
+    published_at: '2026-10-13 06:29:35 UTC',
+    salary: { min: '60000', max: '70000', period: 'year', currency: 'EUR' },
+    translations: {
+      en: { title: 'Senior QA Engineer (m/f/d)', description: '<p>Acme builds software.</p>', requirements: '<p>Playwright. German is not required.</p>' },
+      de: { title: 'Senior QA Engineer (m/w/d)', description: '<p>Acme baut Software.</p>', requirements: '<p>Playwright</p>' },
+    },
+  };
+  const oneVersion = parseRecruiteeResponse({ offers: [bilingual] }, 'Acme');
+  if (oneVersion.length === 1 && oneVersion[0].language === 'de'
+    && oneVersion[0].url === 'https://acme.recruitee.com/o/senior-qa?lang=de'
+    && oneVersion[0].title === 'Senior QA Engineer (m/w/d)') {
+    pass('parseRecruiteeResponse returns only the default version by default, tagged with its language in `language` and `?lang=`');
+  } else {
+    fail(`default-only versions = ${JSON.stringify(oneVersion)}`);
+  }
+
+  const allVersions = parseRecruiteeResponse({ offers: [bilingual] }, 'Acme', { allLanguages: true });
+  const [deVersion, enVersion] = allVersions;
+  if (allVersions.length === 2 && deVersion?.language === 'de' && enVersion?.language === 'en') {
+    pass('parseRecruiteeResponse with allLanguages returns the default version first, though its key comes second in translations');
+  } else {
+    fail(`all-language order = ${JSON.stringify(allVersions.map(v => v.language))}`);
+  }
+  if (enVersion?.title === 'Senior QA Engineer (m/f/d)'
+    && enVersion?.description === 'Acme builds software. Playwright. German is not required.'
+    && enVersion?.url === 'https://acme.recruitee.com/o/senior-qa?lang=en') {
+    pass('parseRecruiteeResponse builds a further version from its own translation: title, description + requirements, ?lang= URL');
+  } else {
+    fail(`en version = ${JSON.stringify(enVersion)}`);
+  }
+  if (enVersion?.location === deVersion?.location && enVersion?.postedAt === deVersion?.postedAt
+    && JSON.stringify(enVersion?.salary) === JSON.stringify(deVersion?.salary) && enVersion?.company === 'Acme') {
+    pass('parseRecruiteeResponse gives every language version the offer\'s location, date, salary and company');
+  } else {
+    fail(`shared fields differ: de=${JSON.stringify(deVersion)} en=${JSON.stringify(enVersion)}`);
+  }
+
+  // A translation identical to the default one is a copy under another label;
+  // an untitled or badly keyed translation is unusable. None of them is a version.
+  const unusableTranslations = parseRecruiteeResponse({
+    offers: [{
+      title: 'Founder Associate (m/w/d)',
+      careers_url: 'https://acme.recruitee.com/o/founder-associate',
+      description: '<p>Same text</p>',
+      requirements: '<p>Same list</p>',
+      translations: {
+        de: { title: 'Founder Associate (m/w/d)', description: '<p>Same text</p>', requirements: '<p>Same list</p>' },
+        en: { title: 'Founder Associate (m/w/d)', description: '<p>Same text</p>', requirements: '<p>Same list</p>' },
+        fr: { title: '  ', description: '<p>Texte</p>', requirements: '<p>Liste</p>' },
+        'en US/../x': { title: 'Bad key', description: '<p>x</p>', requirements: '<p>y</p>' },
+      },
+    }],
+  }, 'Acme', { allLanguages: true });
+  if (unusableTranslations.length === 1 && unusableTranslations[0].language === 'de') {
+    pass('parseRecruiteeResponse skips a byte-identical copy, an untitled translation and a malformed language key');
+  } else {
+    fail(`unusable translations = ${JSON.stringify(unusableTranslations.map(v => [v.language, v.title]))}`);
+  }
+
+  // A copy is judged by the Job it would produce, not by the raw payload: a
+  // translation that differs from the default one only in markup and
+  // whitespace yields the same title and description, so it is skipped too.
+  const markupCopy = parseRecruiteeResponse({
+    offers: [{
+      title: 'Founder Associate (m/w/d)',
+      careers_url: 'https://acme.recruitee.com/o/founder-associate',
+      description: '<p>Same text</p>',
+      requirements: '<p>Same list</p>',
+      translations: {
+        de: { title: 'Founder Associate (m/w/d)', description: '<p>Same text</p>', requirements: '<p>Same list</p>' },
+        en: { title: ' Founder Associate (m/w/d) ', description: '<div>Same   text</div>', requirements: '<ul><li>Same list</li></ul>' },
+      },
+    }],
+  }, 'Acme', { allLanguages: true });
+  if (markupCopy.length === 1 && markupCopy[0].language === 'de') {
+    pass('parseRecruiteeResponse skips a translation that differs from the default one only in markup and whitespace');
+  } else {
+    fail(`markup copy = ${JSON.stringify(markupCopy.map(v => [v.language, v.title, v.description]))}`);
+  }
+
+  // The default version is matched by the whole Job text, requirements
+  // included: a translation with the top-level title and description but other
+  // requirements is a further version, even when its key comes first. A
+  // missing field and an empty one produce the same text.
+  const requirementsDiffer = parseRecruiteeResponse({
+    offers: [{
+      title: 'Data Engineer (m/w/d)',
+      careers_url: 'https://acme.recruitee.com/o/data',
+      description: '<p>Acme</p>',
+      requirements: null,
+      translations: {
+        en: { title: 'Data Engineer (m/w/d)', description: '<p>Acme</p>', requirements: '<p>English is enough.</p>' },
+        de: { title: 'Data Engineer (m/w/d)', description: '<p>Acme</p>', requirements: '' },
+      },
+    }],
+  }, 'Acme', { allLanguages: true });
+  if (JSON.stringify(requirementsDiffer.map(v => [v.language, v.description])) === JSON.stringify([['de', 'Acme'], ['en', 'Acme English is enough.']])) {
+    pass('parseRecruiteeResponse matches the default version by title, description and requirements together');
+  } else {
+    fail(`requirements differ = ${JSON.stringify(requirementsDiffer.map(v => [v.language, v.description]))}`);
+  }
+
+  // No translation equal to the top-level fields → the default language is
+  // unknown. Without allLanguages: one Job, top-level fields, no `language`,
+  // URL unchanged. With it: every translation, tagged, in the API's order, and
+  // no untagged top-level Job next to them.
+  const unknownDefaultOffer = {
+    title: 'Backend Engineer (m/w/d)',
+    careers_url: 'https://acme.recruitee.com/o/backend',
+    description: '<p>Top level</p>',
+    translations: {
+      de: { title: 'Backend Engineer (m/w/d)', description: '<p>Top level, edited</p>' },
+      en: { title: 'Backend Engineer (m/f/d)', description: '<p>English</p>' },
+    },
+  };
+  const unknownDefault = parseRecruiteeResponse({ offers: [unknownDefaultOffer] }, 'Acme');
+  if (unknownDefault.length === 1 && !('language' in unknownDefault[0])
+    && unknownDefault[0].url === 'https://acme.recruitee.com/o/backend' && unknownDefault[0].description === 'Top level') {
+    pass('parseRecruiteeResponse returns one top-level Job with no language when no translation matches the top-level fields');
+  } else {
+    fail(`unknown default = ${JSON.stringify(unknownDefault)}`);
+  }
+  const unknownDefaultAll = parseRecruiteeResponse({ offers: [unknownDefaultOffer] }, 'Acme', { allLanguages: true });
+  if (JSON.stringify(unknownDefaultAll.map(v => [v.language, v.url, v.description])) === JSON.stringify([
+    ['de', 'https://acme.recruitee.com/o/backend?lang=de', 'Top level, edited'],
+    ['en', 'https://acme.recruitee.com/o/backend?lang=en', 'English'],
+  ])) {
+    pass('parseRecruiteeResponse with allLanguages returns every translation, tagged, when none matches the top-level fields');
+  } else {
+    fail(`unknown default, all languages = ${JSON.stringify(unknownDefaultAll.map(v => [v.language, v.url, v.description]))}`);
+  }
+
+  // fetch() reads the language switch from ctx.dedupIncludeLanguage.
+  const stubCtx = (extra) => ({ ...extra, fetchJson: async () => ({ offers: [bilingual] }) });
+  const fetchedDefault = await recruitee.fetch({ name: 'Acme', careers_url: 'https://acme.recruitee.com' }, stubCtx({}));
+  const fetchedAll = await recruitee.fetch({ name: 'Acme', careers_url: 'https://acme.recruitee.com' }, stubCtx({ dedupIncludeLanguage: true }));
+  if (fetchedDefault.length === 1 && fetchedAll.length === 2) {
+    pass('recruitee.fetch() returns further language versions only when ctx.dedupIncludeLanguage is true');
+  } else {
+    fail(`fetch language switch: default=${fetchedDefault.length}, all=${fetchedAll.length}`);
+  }
+
   // ── Demo-tenant filtering ──────────────────────────────────────────────────
   // Recruitee itself stamps "(Sample)" on its own seeded posting — captured
   // live, byte-identical, from two unrelated tenants (adecco, accenture).
